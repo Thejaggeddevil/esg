@@ -13,7 +13,7 @@ from groq import Groq
 load_dotenv()
 
 # ✅ Portable CSV path
-INPUT_CSV = "esg_with_state.csv"
+INPUT_CSV = "esg_extracted_data.csv"
 
 # Lazy-loaded globals
 df = None
