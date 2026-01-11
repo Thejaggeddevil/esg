@@ -1,147 +1,100 @@
 import os
-import pandas as pd
 import numpy as np
+import pandas as pd
 import faiss
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 
-# =========================
-# CONFIG
-# =========================
-INPUT_CSV = "esg_extracted_data.csv"
+CSV_FILE = "esg_extracted_data.csv"
 
-STATE_COL = "state"
-CATEGORY_COL = "category"
-QUESTION_COL = "question"
-ANSWER_COL = "answer"
-
-EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
-
-# =========================
-# GLOBALS (loaded once)
-# =========================
-_df = None
-_embeddings = None
-_index = None
-_model = None
-_client = None
+df = None
+model = None
+index = None
 
 
-# =========================
-# INIT RESOURCES (SAFE)
-# =========================
 def init_resources():
-    global _df, _embeddings, _index, _model, _client
+    global df, model, index
 
-    if _df is not None:
-        return  # already loaded
+    if df is not None:
+        return
 
-    if not os.path.exists(INPUT_CSV):
-        raise FileNotFoundError(f"{INPUT_CSV} not found")
+    if not os.path.exists(CSV_FILE):
+        raise FileNotFoundError(f"{CSV_FILE} not found")
 
-    # Load CSV
-    df = pd.read_csv(INPUT_CSV)
+    df = pd.read_csv(CSV_FILE)
 
-    # Validate columns
-    required = {STATE_COL, CATEGORY_COL, QUESTION_COL, ANSWER_COL}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns in CSV: {missing}")
+    REQUIRED = [
+        "Company",
+        "State",
+        "Category",
+        "Extracted_Text"
+    ]
 
-    # Normalize text
-    df[STATE_COL] = df[STATE_COL].astype(str).str.strip().str.lower()
-    df[CATEGORY_COL] = df[CATEGORY_COL].astype(str).str.strip().str.lower()
+    for col in REQUIRED:
+        if col not in df.columns:
+            raise ValueError(f"CSV missing column: {col}")
 
-    # Combine text for embeddings
-    texts = (
-        "Question: " + df[QUESTION_COL].astype(str) +
-        " | Answer: " + df[ANSWER_COL].astype(str) +
-        " | State: " + df[STATE_COL] +
-        " | Category: " + df[CATEGORY_COL]
-    ).tolist()
-
-    # Embedding model
-    _model = SentenceTransformer(EMBED_MODEL_NAME)
-    embeddings = _model.encode(texts, convert_to_numpy=True)
-
-    # FAISS index
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
-
-    # LLM client
-    _client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-    _df = df
-    _embeddings = embeddings
-    _index = index
-
-
-# =========================
-# RETRIEVAL
-# =========================
-def retrieve_similar_by_state(query, state, category, top_k=5):
-    init_resources()
-
-    state = state.strip().lower()
-    category = category.strip().lower()
-
-    mask = (
-        (_df[STATE_COL] == state) &
-        (_df[CATEGORY_COL] == category)
+    df["context"] = (
+        "Company: " + df["Company"].astype(str) +
+        ", State: " + df["State"].astype(str) +
+        ", Category: " + df["Category"].astype(str) +
+        ", Details: " + df["Extracted_Text"].astype(str)
     )
 
-    filtered = _df[mask]
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    embeddings = model.encode(df["context"].tolist(), show_progress_bar=True)
+
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(np.array(embeddings))
+
+
+def retrieve_docs(question, state, category, top_k=5):
+    init_resources()
+
+    filtered = df[
+        (df["State"].str.lower() == state.lower()) &
+        (df["Category"].str.lower() == category.lower())
+    ]
+
     if filtered.empty:
         return []
 
-    query_emb = _model.encode([query], convert_to_numpy=True)
-    distances, indices = _index.search(query_emb, top_k)
+    emb = model.encode(filtered["context"].tolist())
+    temp_index = faiss.IndexFlatL2(emb.shape[1])
+    temp_index.add(np.array(emb))
 
-    results = []
-    for idx in indices[0]:
-        if idx < len(_df):
-            row = _df.iloc[idx]
-            if row[STATE_COL] == state and row[CATEGORY_COL] == category:
-                results.append(row[ANSWER_COL])
+    q_emb = model.encode([question])
+    _, idx = temp_index.search(np.array(q_emb), min(top_k, len(filtered)))
 
-    return results[:top_k]
+    return filtered.iloc[idx[0]]
 
 
-# =========================
-# RAG ANSWER
-# =========================
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+
 def rag_answer(question, state, category):
-    docs = retrieve_similar_by_state(question, state, category)
+    docs = retrieve_docs(question, state, category)
 
-    if not docs:
-        return (
-            "No ESG-specific recommendations found for this state and category.",
-            []
-        )
+    if len(docs) == 0:
+        return "No ESG data found for this state and category.", ""
 
-    context = "\n".join(f"- {d}" for d in docs)
+    context = "\n".join(docs["Extracted_Text"].astype(str).tolist())
 
     prompt = f"""
-You are an ESG policy advisor.
+You are an ESG consultant.
 
-Context:
+Based ONLY on the following ESG data:
 {context}
 
-Question:
-{question}
-
-Give a concise, practical ESG recommendation.
+Give 3–4 actionable ESG recommendations
+for companies operating in {state}
+under the category {category}.
 """
 
-    response = _client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": "You are an expert ESG consultant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3,
-        max_tokens=300
+    response = client.chat.completions.create(
+        model="llama3-70b-8192",
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    return response.choices[0].message.content.strip(), docs
+    return response.choices[0].message.content.strip(), context
