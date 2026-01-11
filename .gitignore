@@ -3,5 +3,3 @@ __pycache__/
 venv/
 .env
 
-# Data files (DO NOT COMMIT)
-*.csv
