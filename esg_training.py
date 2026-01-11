@@ -1,142 +1,147 @@
 import os
-import re
-import numpy as np
 import pandas as pd
-from time import sleep
-
-from sentence_transformers import SentenceTransformer
+import numpy as np
 import faiss
-from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 from groq import Groq
 
-# load .env variables
-load_dotenv()
-
-# ✅ Portable CSV path
+# =========================
+# CONFIG
+# =========================
 INPUT_CSV = "esg_extracted_data.csv"
 
-# Lazy-loaded globals
-df = None
-model = None
-embeddings = None
-index = None
+STATE_COL = "state"
+CATEGORY_COL = "category"
+QUESTION_COL = "question"
+ANSWER_COL = "answer"
+
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+
+# =========================
+# GLOBALS (loaded once)
+# =========================
+_df = None
+_embeddings = None
+_index = None
+_model = None
+_client = None
 
 
+# =========================
+# INIT RESOURCES (SAFE)
+# =========================
 def init_resources():
-    global df, model, embeddings, index
+    global _df, _embeddings, _index, _model, _client
 
-    if df is not None:
-        return
+    if _df is not None:
+        return  # already loaded
 
     if not os.path.exists(INPUT_CSV):
         raise FileNotFoundError(f"{INPUT_CSV} not found")
 
+    # Load CSV
     df = pd.read_csv(INPUT_CSV)
 
-    df["context"] = (
-        "Company: " + df["Company"].astype(str) +
-        ", State: " + df["State"].astype(str) +
-        ", Category: " + df["Category"].astype(str) +
-        ", Keyword: " + df["Keyword"].astype(str) +
-        ", Extracted Info: " + df["Extracted_Text"].astype(str) +
-        ", Marketing Perspective: " + df["Marketing_Perspective"].astype(str) +
-        ", Cost Perspective: " + df["Cost_Perspective"].astype(str) +
-        ", Ground Impact: " + df["Ground_Impact"].astype(str)
-    )
+    # Validate columns
+    required = {STATE_COL, CATEGORY_COL, QUESTION_COL, ANSWER_COL}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns in CSV: {missing}")
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    # Normalize text
+    df[STATE_COL] = df[STATE_COL].astype(str).str.strip().str.lower()
+    df[CATEGORY_COL] = df[CATEGORY_COL].astype(str).str.strip().str.lower()
 
-    print(">>> Initializing embeddings & FAISS index")
-    embeddings = model.encode(df["context"].tolist(), show_progress_bar=True)
+    # Combine text for embeddings
+    texts = (
+        "Question: " + df[QUESTION_COL].astype(str) +
+        " | Answer: " + df[ANSWER_COL].astype(str) +
+        " | State: " + df[STATE_COL] +
+        " | Category: " + df[CATEGORY_COL]
+    ).tolist()
 
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(np.array(embeddings))
+    # Embedding model
+    _model = SentenceTransformer(EMBED_MODEL_NAME)
+    embeddings = _model.encode(texts, convert_to_numpy=True)
+
+    # FAISS index
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+
+    # LLM client
+    _client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+    _df = df
+    _embeddings = embeddings
+    _index = index
 
 
+# =========================
+# RETRIEVAL
+# =========================
 def retrieve_similar_by_state(query, state, category, top_k=5):
-    df_state = df[
-        (df["State"].str.lower() == state.lower()) &
-        (df["Category"].str.lower() == category.lower())
-    ]
-
-    if df_state.empty:
-        return pd.DataFrame()
-
-    state_embeddings = model.encode(df_state["context"].tolist(), show_progress_bar=False)
-
-    index_state = faiss.IndexFlatL2(state_embeddings.shape[1])
-    index_state.add(np.array(state_embeddings))
-
-    query_embedding = model.encode([query])
-    _, indices = index_state.search(
-        np.array(query_embedding),
-        min(top_k, len(df_state))
-    )
-
-    return df_state.iloc[indices[0]][[
-        "Company", "State", "Category", "Keyword",
-        "Extracted_Text", "Marketing_Perspective", "Cost_Perspective"
-    ]]
-
-
-def summarize_achievements(docs):
-    achievements = []
-
-    for _, row in docs.iterrows():
-        clean = re.sub(r"\s+", " ", str(row["Extracted_Text"])).strip()
-        first_sentence = clean.split(".")[0]
-
-        achievements.append({
-            "summary": "• " + first_sentence,
-            "marketing": row.get("Marketing_Perspective", ""),
-            "cost": row.get("Cost_Perspective", "")
-        })
-
-    return achievements[:4]
-
-
-# ✅ Groq client (NO base_url, NO proxy)
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-
-def rag_answer(query, state=None, category=None, top_k=5):
     init_resources()
 
-    docs = retrieve_similar_by_state(query, state, category)
+    state = state.strip().lower()
+    category = category.strip().lower()
 
-    if docs.empty:
+    mask = (
+        (_df[STATE_COL] == state) &
+        (_df[CATEGORY_COL] == category)
+    )
+
+    filtered = _df[mask]
+    if filtered.empty:
+        return []
+
+    query_emb = _model.encode([query], convert_to_numpy=True)
+    distances, indices = _index.search(query_emb, top_k)
+
+    results = []
+    for idx in indices[0]:
+        if idx < len(_df):
+            row = _df.iloc[idx]
+            if row[STATE_COL] == state and row[CATEGORY_COL] == category:
+                results.append(row[ANSWER_COL])
+
+    return results[:top_k]
+
+
+# =========================
+# RAG ANSWER
+# =========================
+def rag_answer(question, state, category):
+    docs = retrieve_similar_by_state(question, state, category)
+
+    if not docs:
         return (
-            "No relevant ESG data found for this state and category.",
-            "",
-            [],
+            "No ESG-specific recommendations found for this state and category.",
             []
         )
 
-    context = "\n\n".join(docs["Extracted_Text"].astype(str).tolist())
+    context = "\n".join(f"- {d}" for d in docs)
 
     prompt = f"""
-You are an ESG advisor.
-
-Context below contains ESG achievements already done by other companies in {state}.
+You are an ESG policy advisor.
 
 Context:
 {context}
 
-Task:
-Convert these achievements into forward-looking recommendations that OTHER companies operating in {state} can adopt.
+Question:
+{question}
 
-Rules:
-- Use only the context
-- 3–4 bullet points
-- Each bullet starts with a verb
+Give a concise, practical ESG recommendation.
 """
 
-    completion = client.chat.completions.create(
-        model="llama3-70b-8192",
-        messages=[{"role": "user", "content": prompt}],
+    response = _client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": "You are an expert ESG consultant."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3,
+        max_tokens=300
     )
 
-    generated_text = completion.choices[0].message.content.strip()
-    achievements = summarize_achievements(docs)
-
-    return generated_text, context, [], achievements
+    return response.choices[0].message.content.strip(), docs
