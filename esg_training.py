@@ -1,100 +1,67 @@
-import os
-import numpy as np
 import pandas as pd
-import faiss
 from sentence_transformers import SentenceTransformer
-from groq import Groq
+import faiss
+import numpy as np
 
-CSV_FILE = "esg_extracted_data.csv"
+CSV_PATH = "esg_extracted_data.csv"
 
 df = None
 model = None
 index = None
+texts = None
 
 
 def init_resources():
-    global df, model, index
+    global df, model, index, texts
 
     if df is not None:
         return
 
-    if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError(f"{CSV_FILE} not found")
+    # Load CSV
+    df = pd.read_csv(CSV_PATH)
 
-    df = pd.read_csv(CSV_FILE)
+    # Validate required columns
+    required = {"Category", "Extracted_Text"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns in CSV: {missing}")
 
-    REQUIRED = [
-        "Company",
-        "State",
-        "Category",
-        "Extracted_Text"
-    ]
+    # Clean data
+    df = df.dropna(subset=["Extracted_Text", "Category"])
 
-    for col in REQUIRED:
-        if col not in df.columns:
-            raise ValueError(f"CSV missing column: {col}")
+    texts = df["Extracted_Text"].astype(str).tolist()
 
-    df["context"] = (
-        "Company: " + df["Company"].astype(str) +
-        ", State: " + df["State"].astype(str) +
-        ", Category: " + df["Category"].astype(str) +
-        ", Details: " + df["Extracted_Text"].astype(str)
-    )
-
+    # Load embedding model
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    embeddings = model.encode(df["context"].tolist(), show_progress_bar=True)
+    embeddings = model.encode(texts, show_progress_bar=False)
+    embeddings = np.array(embeddings).astype("float32")
 
+    # Create FAISS index
     index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(np.array(embeddings))
+    index.add(embeddings)
 
 
-def retrieve_docs(question, state, category, top_k=5):
+def retrieve_similar(question, category, top_k=3):
     init_resources()
 
-    filtered = df[
-        (df["State"].str.lower() == state.lower()) &
-        (df["Category"].str.lower() == category.lower())
-    ]
+    query_vec = model.encode([question]).astype("float32")
+    _, indices = index.search(query_vec, top_k)
 
-    if filtered.empty:
-        return []
+    results = []
+    for i in indices[0]:
+        row = df.iloc[i]
+        if row["Category"].lower() == category.lower():
+            results.append(row["Extracted_Text"])
 
-    emb = model.encode(filtered["context"].tolist())
-    temp_index = faiss.IndexFlatL2(emb.shape[1])
-    temp_index.add(np.array(emb))
-
-    q_emb = model.encode([question])
-    _, idx = temp_index.search(np.array(q_emb), min(top_k, len(filtered)))
-
-    return filtered.iloc[idx[0]]
-
-
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    return results[:top_k]
 
 
 def rag_answer(question, state, category):
-    docs = retrieve_docs(question, state, category)
+    docs = retrieve_similar(question, category)
 
-    if len(docs) == 0:
-        return "No ESG data found for this state and category.", ""
+    if not docs:
+        return "No relevant ESG data found for this category.", []
 
-    context = "\n".join(docs["Extracted_Text"].astype(str).tolist())
-
-    prompt = f"""
-You are an ESG consultant.
-
-Based ONLY on the following ESG data:
-{context}
-
-Give 3–4 actionable ESG recommendations
-for companies operating in {state}
-under the category {category}.
-"""
-
-    response = client.chat.completions.create(
-        model="llama3-70b-8192",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content.strip(), context
+    answer = " ".join(docs[:2])
+    return answer, docs
