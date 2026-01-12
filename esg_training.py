@@ -2,66 +2,84 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
+import os
 
-CSV_PATH = "esg_extracted_data.csv"
+DATA_PATH = "esg_extracted_data.csv"
 
 df = None
-model = None
 index = None
-texts = None
+model = None
+documents = None
 
 
 def init_resources():
-    global df, model, index, texts
+    global df, index, model, documents
 
     if df is not None:
-        return
+        return  # already initialized
+
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(f"{DATA_PATH} not found")
 
     # Load CSV
-    df = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(DATA_PATH)
 
-    # Validate required columns
-    required = {"Category", "Extracted_Text"}
+    # Normalize column names
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    required = {"state", "category", "question", "answer"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}")
 
-    # Clean data
-    df = df.dropna(subset=["Extracted_Text", "Category"])
-
-    texts = df["Extracted_Text"].astype(str).tolist()
+    # Build documents
+    documents = (
+        "State: " + df["state"].astype(str) +
+        " | Category: " + df["category"].astype(str) +
+        " | Question: " + df["question"].astype(str) +
+        " | Answer: " + df["answer"].astype(str)
+    ).tolist()
 
     # Load embedding model
     model = SentenceTransformer("all-MiniLM-L6-v2")
+    embeddings = model.encode(documents, convert_to_numpy=True)
 
-    embeddings = model.encode(texts, show_progress_bar=False)
-    embeddings = np.array(embeddings).astype("float32")
-
-    # Create FAISS index
-    index = faiss.IndexFlatL2(embeddings.shape[1])
+    # FAISS index
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
     index.add(embeddings)
 
 
-def retrieve_similar(question, category, top_k=3):
+def retrieve_similar_by_state(query, state, category, k=3):
     init_resources()
 
-    query_vec = model.encode([question]).astype("float32")
-    _, indices = index.search(query_vec, top_k)
+    filtered = df[
+        (df["state"].str.lower() == state.lower()) &
+        (df["category"].str.lower() == category.lower())
+    ]
 
-    results = []
-    for i in indices[0]:
-        row = df.iloc[i]
-        if row["Category"].lower() == category.lower():
-            results.append(row["Extracted_Text"])
+    if filtered.empty:
+        return []
 
-    return results[:top_k]
+    texts = (
+        "Question: " + filtered["question"] +
+        " | Answer: " + filtered["answer"]
+    ).tolist()
+
+    embeddings = model.encode(texts, convert_to_numpy=True)
+    q_emb = model.encode([query], convert_to_numpy=True)
+
+    temp_index = faiss.IndexFlatL2(embeddings.shape[1])
+    temp_index.add(embeddings)
+
+    _, I = temp_index.search(q_emb, min(k, len(texts)))
+    return [texts[i] for i in I[0]]
 
 
 def rag_answer(question, state, category):
-    docs = retrieve_similar(question, category)
+    docs = retrieve_similar_by_state(question, state, category)
 
     if not docs:
-        return "No relevant ESG data found for this category.", []
+        return "No ESG data found for given inputs.", []
 
-    answer = " ".join(docs[:2])
-    return answer, docs
+    return docs[0], docs

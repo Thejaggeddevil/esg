@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from esg_training import rag_answer
 
-app = FastAPI()
+app = FastAPI(title="ESG Recommendation API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,5 +23,12 @@ def health():
 
 @app.post("/recommend")
 def recommend(req: QueryRequest):
-    answer, _ = rag_answer(req.question, req.state, req.category)
-    return {"recommendation": answer}
+    answer, sources = rag_answer(
+        req.question,
+        req.state,
+        req.category
+    )
+    return {
+        "recommendation": answer,
+        "sources": sources
+    }
