@@ -7,52 +7,48 @@ DATA_PATH = "esg_extracted_data.csv"
 
 df = None
 vectorizer = None
-tfidf_matrix = None
 documents = None
 
 
 def init_resources():
-    global df, vectorizer, tfidf_matrix, documents
+    global df, vectorizer, documents
 
     if df is not None:
         return
 
     if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError(f"{DATA_PATH} not found in project root")
+        raise FileNotFoundError(f"{DATA_PATH} not found")
 
     df = pd.read_csv(DATA_PATH)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    required = {"state", "category", "question", "answer"}
+    required = {"company", "category", "keyword", "extracted_text"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}")
 
     documents = (
-        "State: " + df["state"].astype(str) +
+        "Company: " + df["company"].astype(str) +
         " Category: " + df["category"].astype(str) +
-        " Question: " + df["question"].astype(str) +
-        " Answer: " + df["answer"].astype(str)
+        " Keyword: " + df["keyword"].astype(str) +
+        " Text: " + df["extracted_text"].astype(str)
     ).tolist()
 
     vectorizer = TfidfVectorizer(stop_words="english")
-    tfidf_matrix = vectorizer.fit_transform(documents)
+    vectorizer.fit(documents)
 
 
-def rag_answer(question: str, state: str, category: str):
+def rag_answer(question: str, category: str):
     init_resources()
 
-    filtered = df[
-        (df["state"].str.lower() == state.lower()) &
-        (df["category"].str.lower() == category.lower())
-    ]
+    filtered = df[df["category"].str.lower() == category.lower()]
 
     if filtered.empty:
-        return "No ESG data found for the given inputs.", []
+        return "No ESG data found for this category.", []
 
     texts = (
-        "Question: " + filtered["question"] +
-        " Answer: " + filtered["answer"]
+        "Keyword: " + filtered["keyword"] +
+        " Text: " + filtered["extracted_text"]
     ).tolist()
 
     query_vec = vectorizer.transform([question])

@@ -13,14 +13,12 @@ app.add_middleware(
 )
 
 class QueryRequest(BaseModel):
-    state: str
     category: str
     question: str
 
 
 @app.on_event("startup")
 def startup_event():
-    # Load everything once at startup
     init_resources()
 
 
@@ -34,7 +32,6 @@ def recommend(req: QueryRequest):
     try:
         answer, sources = rag_answer(
             req.question,
-            req.state,
             req.category
         )
         return {
@@ -42,5 +39,4 @@ def recommend(req: QueryRequest):
             "sources": sources
         }
     except Exception as e:
-        # Never hide errors again
         return {"error": str(e)}
