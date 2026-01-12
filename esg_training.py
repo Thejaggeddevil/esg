@@ -1,30 +1,26 @@
 import pandas as pd
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
 import os
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 DATA_PATH = "esg_extracted_data.csv"
 
 df = None
-index = None
-model = None
+vectorizer = None
+tfidf_matrix = None
 documents = None
 
 
 def init_resources():
-    global df, index, model, documents
+    global df, vectorizer, tfidf_matrix, documents
 
     if df is not None:
-        return  # already initialized
+        return
 
     if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError(f"{DATA_PATH} not found")
+        raise FileNotFoundError(f"{DATA_PATH} not found in project root")
 
-    # Load CSV
     df = pd.read_csv(DATA_PATH)
-
-    # Normalize column names
     df.columns = [c.strip().lower() for c in df.columns]
 
     required = {"state", "category", "question", "answer"}
@@ -32,25 +28,18 @@ def init_resources():
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}")
 
-    # Build documents
     documents = (
         "State: " + df["state"].astype(str) +
-        " | Category: " + df["category"].astype(str) +
-        " | Question: " + df["question"].astype(str) +
-        " | Answer: " + df["answer"].astype(str)
+        " Category: " + df["category"].astype(str) +
+        " Question: " + df["question"].astype(str) +
+        " Answer: " + df["answer"].astype(str)
     ).tolist()
 
-    # Load embedding model
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(documents, convert_to_numpy=True)
-
-    # FAISS index
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
+    vectorizer = TfidfVectorizer(stop_words="english")
+    tfidf_matrix = vectorizer.fit_transform(documents)
 
 
-def retrieve_similar_by_state(query, state, category, k=3):
+def rag_answer(question: str, state: str, category: str):
     init_resources()
 
     filtered = df[
@@ -59,27 +48,17 @@ def retrieve_similar_by_state(query, state, category, k=3):
     ]
 
     if filtered.empty:
-        return []
+        return "No ESG data found for the given inputs.", []
 
     texts = (
         "Question: " + filtered["question"] +
-        " | Answer: " + filtered["answer"]
+        " Answer: " + filtered["answer"]
     ).tolist()
 
-    embeddings = model.encode(texts, convert_to_numpy=True)
-    q_emb = model.encode([query], convert_to_numpy=True)
+    query_vec = vectorizer.transform([question])
+    text_vecs = vectorizer.transform(texts)
 
-    temp_index = faiss.IndexFlatL2(embeddings.shape[1])
-    temp_index.add(embeddings)
+    similarities = cosine_similarity(query_vec, text_vecs)[0]
+    best_idx = similarities.argmax()
 
-    _, I = temp_index.search(q_emb, min(k, len(texts)))
-    return [texts[i] for i in I[0]]
-
-
-def rag_answer(question, state, category):
-    docs = retrieve_similar_by_state(question, state, category)
-
-    if not docs:
-        return "No ESG data found for given inputs.", []
-
-    return docs[0], docs
+    return texts[best_idx], texts
