@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from esg_training import rag_answer, init_resources
+from esg_training import analyze_esg_risk, init_resources
 
-app = FastAPI(title="ESG Recommendation API")
+app = FastAPI(title="ESG Risk Scanner API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,29 +14,21 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     category: str
-    question: str
-
 
 @app.on_event("startup")
 def startup_event():
     init_resources()
 
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
-@app.post("/recommend")
-def recommend(req: QueryRequest):
+@app.post("/analyze")
+def analyze(req: QueryRequest):
     try:
-        answer, sources = rag_answer(
-            req.question,
-            req.category
-        )
+        result = analyze_esg_risk(req.category)
         return {
-            "recommendation": answer,
-            "sources": sources
+            "analysis": result
         }
     except Exception as e:
         return {"error": str(e)}

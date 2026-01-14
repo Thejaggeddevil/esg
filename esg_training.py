@@ -1,17 +1,13 @@
 import pandas as pd
 import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 DATA_PATH = "esg_extracted_data.csv"
-
 df = None
-vectorizer = None
-documents = None
 
+REQUIRED_COLUMNS = ["company", "category", "extracted_text"]
 
 def init_resources():
-    global df, vectorizer, documents
+    global df
 
     if df is not None:
         return
@@ -22,39 +18,56 @@ def init_resources():
     df = pd.read_csv(DATA_PATH)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    required = {"company", "category", "keyword", "extracted_text"}
-    missing = required - set(df.columns)
+    missing = set(REQUIRED_COLUMNS) - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}")
 
-    documents = (
-        "Company: " + df["company"].astype(str) +
-        " Category: " + df["category"].astype(str) +
-        " Keyword: " + df["keyword"].astype(str) +
-        " Text: " + df["extracted_text"].astype(str)
-    ).tolist()
 
-    vectorizer = TfidfVectorizer(stop_words="english")
-    vectorizer.fit(documents)
-
-
-def rag_answer(question: str, category: str):
+def analyze_esg_risk(category: str) -> str:
     init_resources()
 
-    filtered = df[df["category"].str.lower() == category.lower()]
+    pillar = category.strip().lower()
+    filtered = df[df["category"].str.lower() == pillar]
 
+    # No disclosure at all
     if filtered.empty:
-        return "No ESG data found for this category.", []
+        return f"""{category.upper()}:
+- Risk Level: RED
+- Finding:
+  - No ESG disclosure data found
+  - CSV column: category
+- Impact:
+  - Absence of disclosure represents compliance and reporting risk
+- Data Evidence:
+  - No rows found for category = {category}
+"""
 
-    texts = (
-        "Keyword: " + filtered["keyword"] +
-        " Text: " + filtered["extracted_text"]
-    ).tolist()
+    findings = []
+    risk_level = "GREEN"
 
-    query_vec = vectorizer.transform([question])
-    text_vecs = vectorizer.transform(texts)
+    for col in REQUIRED_COLUMNS:
+        missing_count = filtered[col].isnull().sum()
+        if missing_count > 0:
+            findings.append(f"- {col}: {missing_count} missing values")
+            risk_level = "YELLOW"
 
-    similarities = cosine_similarity(query_vec, text_vecs)[0]
-    best_idx = similarities.argmax()
+    if not findings:
+        return f"""{category.upper()}:
+- Risk Level: GREEN
+- Finding:
+  - No missing or incomplete ESG disclosures detected
+- Impact:
+  - No compliance or reporting risk identified
+- Data Evidence:
+  - All required fields populated
+"""
 
-    return texts[best_idx], texts
+    return f"""{category.upper()}:
+- Risk Level: {risk_level}
+- Finding:
+{chr(10).join(findings)}
+- Impact:
+  - Missing or incomplete ESG data may indicate compliance or reporting risk
+- Data Evidence:
+  - Null or empty values detected in listed columns
+"""
