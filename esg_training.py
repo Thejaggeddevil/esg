@@ -1,8 +1,11 @@
-import pandas as pd
 import os
+import pandas as pd
 
-DATA_PATH = "esg_extracted_data.csv"
-df = None
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH = os.path.join(BASE_DIR, "esg_extracted_data.csv")
+
+df = pd.read_csv(CSV_PATH)
+
 
 REQUIRED_COLUMNS = ["company", "category", "extracted_text"]
 
