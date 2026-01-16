@@ -1,5 +1,6 @@
 # main.py
 # PRODUCTION-READY ESG RISK BACKEND (FASTAPI)
+# FINAL VERSION – NO FURTHER BACKEND UPDATES REQUIRED
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,9 +11,9 @@ import os
 
 from esg_training import analyze_esg_data
 
-# ---------------------------
+# -------------------------------------------------
 # PATH SAFETY (RENDER SAFE)
-# ---------------------------
+# -------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_SOURCE = os.path.join(BASE_DIR, "esg_extracted_data.csv")
@@ -20,25 +21,26 @@ DATA_SOURCE = os.path.join(BASE_DIR, "esg_extracted_data.csv")
 if not os.path.exists(DATA_SOURCE):
     raise RuntimeError("ESG dataset missing. Deployment aborted.")
 
-# ---------------------------
+# -------------------------------------------------
 # CONSTANTS
-# ---------------------------
+# -------------------------------------------------
 
 ALLOWED_CATEGORIES = {"Environmental", "Social", "Governance"}
 MODEL_VERSION = "ESG-RISK-v1.0"
+DATA_FILE_NAME = "esg_extracted_data.csv"
 
-# ---------------------------
+# -------------------------------------------------
 # FASTAPI APP
-# ---------------------------
+# -------------------------------------------------
 
 app = FastAPI(
     title="Production ESG Risk Analysis API",
     version=MODEL_VERSION
 )
 
-# ---------------------------
-# CORS (PRODUCTION SAFE)
-# ---------------------------
+# -------------------------------------------------
+# CORS (ANDROID / WEB SAFE)
+# -------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,9 +50,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------
+# -------------------------------------------------
 # SCHEMAS
-# ---------------------------
+# -------------------------------------------------
 
 class AnalyzeRequest(BaseModel):
     category: str
@@ -65,9 +67,18 @@ class AnalyzeResponse(BaseModel):
     data_source: str
     model_version: str
 
-# ---------------------------
-# API ENDPOINT
-# ---------------------------
+class EntryResponse(BaseModel):
+    id: str
+    category: str
+    risk_level: str
+    summary: str
+    key_findings: list[str]
+    timestamp: str
+    model_version: str
+
+# -------------------------------------------------
+# ANALYZE ENDPOINT (SINGLE CATEGORY)
+# -------------------------------------------------
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(request: AnalyzeRequest):
@@ -96,13 +107,42 @@ def analyze(request: AnalyzeRequest):
         risk_level=result.get("risk_level", "UNKNOWN"),
         summary=result.get("summary", ""),
         key_findings=result.get("key_findings", []),
-        data_source="esg_extracted_data.csv",
+        data_source=DATA_FILE_NAME,
         model_version=MODEL_VERSION
     )
 
-# ---------------------------
-# HEALTH CHECK
-# ---------------------------
+# -------------------------------------------------
+# ENTRIES ENDPOINT (FOR REAL APP UI)
+# -------------------------------------------------
+
+@app.get("/entries", response_model=list[EntryResponse])
+def get_entries():
+
+    entries = []
+
+    for category in ALLOWED_CATEGORIES:
+        try:
+            result = analyze_esg_data(category)
+        except Exception:
+            continue
+
+        entries.append(
+            EntryResponse(
+                id=str(uuid.uuid4()),
+                category=category,
+                risk_level=result.get("risk_level", "UNKNOWN"),
+                summary=result.get("summary", ""),
+                key_findings=result.get("key_findings", []),
+                timestamp=datetime.utcnow().isoformat(),
+                model_version=MODEL_VERSION
+            )
+        )
+
+    return entries
+
+# -------------------------------------------------
+# HEALTH CHECK (DEPLOYMENT VERIFICATION)
+# -------------------------------------------------
 
 @app.get("/health")
 def health():
