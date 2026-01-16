@@ -1,22 +1,31 @@
 # main.py
 # PRODUCTION-READY ESG RISK BACKEND (FASTAPI)
-# This file REPLACES your existing main.py
-# Other files (esg_training.py, CSV, requirements) remain unchanged
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
+import os
 
-from esg_training import analyze_esg_data  # existing logic you already have
+from esg_training import analyze_esg_data
 
 # ---------------------------
-# CONSTANTS (PRODUCTION)
+# PATH SAFETY (RENDER SAFE)
+# ---------------------------
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_SOURCE = os.path.join(BASE_DIR, "esg_extracted_data.csv")
+
+if not os.path.exists(DATA_SOURCE):
+    raise RuntimeError("ESG dataset missing. Deployment aborted.")
+
+# ---------------------------
+# CONSTANTS
 # ---------------------------
 
 ALLOWED_CATEGORIES = {"Environmental", "Social", "Governance"}
 MODEL_VERSION = "ESG-RISK-v1.0"
-DATA_SOURCE = "esg_extracted_data.csv"
 
 # ---------------------------
 # FASTAPI APP
@@ -28,7 +37,19 @@ app = FastAPI(
 )
 
 # ---------------------------
-# REQUEST / RESPONSE SCHEMAS
+# CORS (PRODUCTION SAFE)
+# ---------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------
+# SCHEMAS
 # ---------------------------
 
 class AnalyzeRequest(BaseModel):
@@ -50,28 +71,24 @@ class AnalyzeResponse(BaseModel):
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(request: AnalyzeRequest):
-    # 1. CATEGORY VALIDATION
+
     if request.category not in ALLOWED_CATEGORIES:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid category. Allowed values: {list(ALLOWED_CATEGORIES)}"
+            detail=f"Invalid category. Allowed: {list(ALLOWED_CATEGORIES)}"
         )
 
-    # 2. GENERATE AUDIT METADATA
     request_id = str(uuid.uuid4())
     timestamp = datetime.utcnow().isoformat()
 
-    # 3. RUN EXISTING ESG LOGIC (UNCHANGED)
-    result = analyze_esg_data(request.category)
+    try:
+        result = analyze_esg_data(request.category)
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="ESG analysis engine failed"
+        )
 
-    # EXPECTED FROM esg_training.py:
-    # result = {
-    #   "risk_level": "HIGH / MEDIUM / LOW",
-    #   "summary": "...",
-    #   "key_findings": [...]
-    # }
-
-    # 4. STRONG, AUDIT-SAFE RESPONSE
     return AnalyzeResponse(
         request_id=request_id,
         timestamp=timestamp,
@@ -79,16 +96,16 @@ def analyze(request: AnalyzeRequest):
         risk_level=result.get("risk_level", "UNKNOWN"),
         summary=result.get("summary", ""),
         key_findings=result.get("key_findings", []),
-        data_source=DATA_SOURCE,
+        data_source="esg_extracted_data.csv",
         model_version=MODEL_VERSION
     )
 
 # ---------------------------
-# HEALTH CHECK (OPTIONAL BUT PRODUCTION-STANDARD)
+# HEALTH CHECK
 # ---------------------------
 
 @app.get("/health")
-def health_check():
+def health():
     return {
         "status": "OK",
         "service": "ESG Risk Analysis Backend",
