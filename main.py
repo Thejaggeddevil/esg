@@ -1,6 +1,6 @@
 # main.py
 # PRODUCTION-READY ESG RISK BACKEND (FASTAPI)
-# FINAL VERSION – NO FURTHER BACKEND UPDATES REQUIRED
+# FINAL VERSION – ANDROID SAFE
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,6 +76,14 @@ class EntryResponse(BaseModel):
     timestamp: str
     model_version: str
 
+class InsightResponse(BaseModel):
+    category: str
+    pillar: str
+    score: float
+    risk: str
+    confidence: float
+    model_version: str
+
 # -------------------------------------------------
 # ANALYZE ENDPOINT (SINGLE CATEGORY)
 # -------------------------------------------------
@@ -112,7 +120,7 @@ def analyze(request: AnalyzeRequest):
     )
 
 # -------------------------------------------------
-# ENTRIES ENDPOINT (FOR REAL APP UI)
+# ENTRIES ENDPOINT (REAL DATA)
 # -------------------------------------------------
 
 @app.get("/entries", response_model=list[EntryResponse])
@@ -141,7 +149,45 @@ def get_entries():
     return entries
 
 # -------------------------------------------------
-# HEALTH CHECK (DEPLOYMENT VERIFICATION)
+# INSIGHTS ENDPOINT (FOR DASHBOARD / MOBILE UI)
+# -------------------------------------------------
+
+@app.get("/insights", response_model=list[InsightResponse])
+def get_insights():
+
+    insights = []
+
+    for category in ALLOWED_CATEGORIES:
+        try:
+            result = analyze_esg_data(category)
+        except Exception:
+            continue
+
+        risk = result.get("risk_level", "UNKNOWN")
+
+        score = {
+            "LOW": 85.0,
+            "MEDIUM": 60.0,
+            "HIGH": 30.0
+        }.get(risk, 50.0)
+
+        confidence = round(len(result.get("key_findings", [])) / 10, 2)
+
+        insights.append(
+            InsightResponse(
+                category=category,
+                pillar=category[0],  # E / S / G
+                score=score,
+                risk=risk,
+                confidence=min(confidence, 1.0),
+                model_version=MODEL_VERSION
+            )
+        )
+
+    return insights
+
+# -------------------------------------------------
+# HEALTH CHECK
 # -------------------------------------------------
 
 @app.get("/health")
